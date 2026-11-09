@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pipeline:
+    name: Tests et pipeline de bout en bout
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Dépendances
+        run: pip install -r requirements.txt
+      - name: Tests (validation, PySpark, anomalies, entrepôt)
+        run: pytest -q tests/test_validate.py tests/test_pipeline.py
+      - name: Pipeline complet sur 14 jours, dont un jour corrompu
+        run: |
+          python -m netpulse.generate --start 2026-10-01 --days 14 --corrupt-day 2026-10-09
+          python -m netpulse.pipeline 2026-10-01 2026-10-14 | tee run.log
+          grep -q "BLOQUÉ : Validation CRITICAL pour 2026-10-09" run.log
+          test "$(grep -c '"quality"' run.log)" -eq 13
+
+  dag:
+    name: Intégrité du DAG Airflow
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installation d'Airflow 2.10.5
+        run: |
+          pip install "apache-airflow==2.10.5" -r requirements.txt \
+            --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.10.5/constraints-3.12.txt"
+      - name: Tests du DAG
+        env:
+          AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+        run: |
+          airflow db migrate
+          pytest -q tests/test_dag.py
